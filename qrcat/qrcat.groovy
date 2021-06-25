@@ -19,6 +19,7 @@ import java.awt.Robot
 import java.awt.Toolkit
 import java.awt.event.InputEvent
 import java.awt.event.KeyEvent
+import java.awt.event.MouseEvent
 import java.awt.image.BufferedImage
 import java.nio.file.Paths
 import javax.swing.*
@@ -38,11 +39,19 @@ class SendChunker {
     @Bindable ImageIcon imageIcon
     boolean eof = false
 
-    def readChunk() {
-        byte[] bytes = System.in.readNBytes(2000)
+    private byte[] chunk
+    private Random r = new Random()
 
+    def readChunk() {
+        chunk = System.in.readNBytes(2000)
+        refresh()
+    }
+
+    def refresh() {
         String contents
-        if (bytes) {
+        if (chunk) {
+            byte[] bytes = Arrays.copyOf(chunk, chunk.length + 1)
+            bytes[bytes.length - 1] = r.nextInt(127) as byte
             contents = bytes.encodeBase64().toString()
         } else {
             contents = "\004"
@@ -68,7 +77,7 @@ def send() {
             label(
                 icon: bind(source: sendChunker, sourceProperty: 'imageIcon'),
                 mouseClicked: { e ->
-                    if (e.getClickCount() == 1) {
+                    if (e.getButton() == MouseEvent.BUTTON1 && e.getClickCount() == 1) {
                         if (sendChunker.eof) {
                             System.err.println()
                             System.exit(0)
@@ -77,19 +86,23 @@ def send() {
                         sendChunker.readChunk()
                         t = System.currentTimeMillis()
                     }
+                    if (e.getButton() == MouseEvent.BUTTON3 && e.getClickCount() == 1) {
+                        System.err.print('?')
+                        sendChunker.refresh()
+                    }
                 }
             )
         }
     }
 
     def r = new Random()
-    new Timer(3000, {
-        if (t > 0 && System.currentTimeMillis() - t > 3000) {
+    new Timer(1000, {
+        if (t > 0 && System.currentTimeMillis() - t > 1000) {
             def p = swing.frame.getLocationOnScreen()
             p.x += (p.x < 20 ? 1 : p.x > 100 ? -1 : r.nextBoolean() ? 1 : -1) * r.nextInt(10)
             p.y += (p.y < 20 ? 1 : p.y > 100 ? -1 : r.nextBoolean() ? 1 : -1) * r.nextInt(10)
             swing.frame.setLocation(p)
-            System.err.print('!')
+            System.err.print('z')
         }
     }).start()
 }
@@ -98,6 +111,18 @@ def recv() {
     def robot = new Robot()
     def prevText = ""
     def sameTextCount = 0
+    def points = null
+
+    def click = { button ->
+        robot.mouseMove(
+            (int)points.collect { point -> point.getX() }.average(),
+            (int)points.collect { point -> point.getY() }.average())
+        robot.mousePress(button)
+        robot.delay(100)
+        robot.mouseRelease(button)
+        robot.delay(400)
+    }
+
     while (true) {
         def result
         def attempt = 0
@@ -109,8 +134,16 @@ def recv() {
                 result = new QRCodeReader().decode(binaryBitmap)
                 break
             } catch (ReaderException e) {
-                System.err.print("z")
+                // com.google.zxing.FormatException
+                // com.google.zxing.NotFoundException
+                if (e instanceof com.google.zxing.FormatException) {
+                    click(InputEvent.BUTTON3_DOWN_MASK)
+                    System.err.print('?')
+                } else {
+                    System.err.print('z')
+                }
                 if (attempt > 60) {
+                    System.err.println()
                     throw e
                 }
                 attempt++
@@ -124,17 +157,12 @@ def recv() {
             sameTextCount++
             if (sameTextCount < 10)
                 continue
-            System.err.print("!")
+            System.err.print('!')
         }
         sameTextCount = 0
 
-        robot.mouseMove(
-            (int)result.getResultPoints().collect { point -> point.getX() }.average(),
-            (int)result.getResultPoints().collect { point -> point.getY() }.average())
-        robot.mousePress(InputEvent.BUTTON1_DOWN_MASK)
-        robot.delay(100)
-        robot.mouseRelease(InputEvent.BUTTON1_DOWN_MASK)
-        robot.delay(400)
+        points = result.getResultPoints()
+        click(InputEvent.BUTTON1_DOWN_MASK)
 
         if (prevText == nextText)
             continue
@@ -144,8 +172,8 @@ def recv() {
             break
         } else {
             def bytes = nextText.decodeBase64()
-            System.out.write(bytes, 0, bytes.length)
-            System.err.print(".")
+            System.out.write(bytes, 0, bytes.length - 1)
+            System.err.print('.')
         }
     }
     System.err.println()
