@@ -18,6 +18,7 @@ import java.awt.Rectangle
 import java.awt.Robot
 import java.awt.Toolkit
 import java.awt.event.InputEvent
+import java.awt.event.KeyAdapter
 import java.awt.event.KeyEvent
 import java.awt.event.MouseEvent
 import java.awt.image.BufferedImage
@@ -30,7 +31,28 @@ def usage() {
     System.exit(2)
 }
 
-if (args.length != 1) usage()
+def test(String... args) {
+    def pb = new ProcessBuilder(["test"] + (args as List))
+    pb.inheritIO()
+    def p = pb.start()
+    p.waitFor()
+    return p.exitValue()
+}
+
+if (args.length == 0) {
+    try {
+        test("-e", ".")
+    } catch (IOException e) {
+        usage()
+    }
+    def t0 = test("-t", "0")
+    def t1 = test("-t", "1")
+    if (t0 == t1) usage()
+    else if (t0 == 1 && t1 == 0) send()
+    else if (t0 == 0 && t1 == 1) recv()
+    else usage()
+}
+else if (args.length != 1) usage()
 else if (args[0] == "send") send()
 else if (args[0] == "recv") recv()
 else usage()
@@ -41,6 +63,7 @@ class SendChunker {
 
     private byte[] chunk
     private Random r = new Random()
+    private byte seq = 1
 
     def readChunk() {
         chunk = System.in.readNBytes(2000)
@@ -50,8 +73,10 @@ class SendChunker {
     def refresh() {
         String contents
         if (chunk) {
-            byte[] bytes = Arrays.copyOf(chunk, chunk.length + 1)
-            bytes[bytes.length - 1] = r.nextInt(127) as byte
+            byte[] bytes = Arrays.copyOf(chunk, chunk.length + 2)
+            bytes[bytes.length - 2] = r.nextInt(127) as byte
+            bytes[bytes.length - 1] = seq
+            seq == 127 ? seq = 1 : ++seq
             contents = bytes.encodeBase64().toString()
         } else {
             contents = "\004"
@@ -70,6 +95,21 @@ def send() {
 
     def t = 0L
 
+    def action1 = {
+        if (sendChunker.eof) {
+            System.err.println()
+            System.exit(0)
+        }
+        System.err.print('.')
+        sendChunker.readChunk()
+        t = System.currentTimeMillis()
+    }
+
+    def action2 = {
+        System.err.print('?')
+        sendChunker.refresh()
+    }
+
     def swing = new SwingBuilder()
     swing.edt {
         frame(title: "qrcat", defaultCloseOperation: JFrame.EXIT_ON_CLOSE, pack: true, show: true, id: "frame") {
@@ -78,22 +118,23 @@ def send() {
                 icon: bind(source: sendChunker, sourceProperty: 'imageIcon'),
                 mouseClicked: { e ->
                     if (e.getButton() == MouseEvent.BUTTON1 && e.getClickCount() == 1) {
-                        if (sendChunker.eof) {
-                            System.err.println()
-                            System.exit(0)
-                        }
-                        System.err.print('.')
-                        sendChunker.readChunk()
-                        t = System.currentTimeMillis()
+                        action1()
                     }
                     if (e.getButton() == MouseEvent.BUTTON3 && e.getClickCount() == 1) {
-                        System.err.print('?')
-                        sendChunker.refresh()
+                        action2()
                     }
                 }
             )
         }
     }
+    swing.frame.addKeyListener([ keyPressed: { e ->
+        if (e.getKeyCode() in [KeyEvent.VK_ESCAPE, KeyEvent.VK_Q]) {
+            System.exit(3)
+        }
+        if (e.getKeyCode() == KeyEvent.VK_SPACE) {
+            action1()
+        }
+    }] as KeyAdapter)
 
     def r = new Random()
     new Timer(1000, {
@@ -110,6 +151,7 @@ def send() {
 def recv() {
     def robot = new Robot()
     def prevText = ""
+    def prevSeq = 0
     def sameTextCount = 0
     def points = null
 
@@ -171,8 +213,20 @@ def recv() {
         if (nextText == "\004") {
             break
         } else {
-            def bytes = nextText.decodeBase64()
-            System.out.write(bytes, 0, bytes.length - 1)
+            byte[] bytes = nextText.decodeBase64()
+            byte seq = bytes[bytes.length - 1]
+
+            def d = seq - prevSeq
+            prevSeq = seq
+            if (d < 0) d += 127
+            if (d == 0) {
+                continue
+            } else if (d != 1) {
+                System.err.print('/')
+                System.err.print(d)
+            }
+
+            System.out.write(bytes, 0, bytes.length - 2)
             System.err.print('.')
         }
     }
