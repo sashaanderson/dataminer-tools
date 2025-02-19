@@ -94,8 +94,13 @@ class SendChunker {
     def refresh() {
         String contents
         if (chunk) {
-            byte[] bytes = Arrays.copyOf(chunk, chunk.length + 2)
-            bytes[bytes.length - 2] = r.nextInt(127) as byte
+            byte[] bytes = new byte[chunk.length + 2];
+            byte offset = r.nextInt(Math.min(127, chunk.length - 1)) as byte
+            System.arraycopy(chunk, 0, bytes, offset, chunk.length - offset)
+            if (offset > 0) {
+                System.arraycopy(chunk, chunk.length - offset, bytes, 0, offset)
+            }
+            bytes[bytes.length - 2] = offset
             bytes[bytes.length - 1] = seq
             contents = bytes.encodeBase64().toString()
         } else {
@@ -245,6 +250,7 @@ def recv() {
         } else {
             byte[] bytes = nextText.decodeBase64()
             byte seq = bytes[bytes.length - 1]
+            byte offset = bytes[bytes.length - 2]
 
             def d = seq - prevSeq
             prevSeq = seq
@@ -258,7 +264,10 @@ def recv() {
                 err.print('!')
             }
 
-            System.out.write(bytes, 0, bytes.length - 2)
+            System.out.write(bytes, offset, bytes.length - 2 - offset)
+            if (offset > 0) {
+                System.out.write(bytes, 0, offset)
+            }
 
             if (seq > 1) err.print(' ')
             err.print(seq)
